@@ -77,3 +77,89 @@ def process_all_subjects(paths, output_dir, subject_ids=None):
     print("Total subjects:", len(saved_files))
 
     return saved_files
+
+
+
+def create_subject_splits(processed_dir, output_dir):
+    """
+    Create subject-wise train, validation and test datasets.
+
+    No subject appears in more than one split.
+    """
+
+    from collections import Counter
+
+    processed_dir = Path(processed_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Fixed subject-wise split
+    splits = {
+        "train": [1, 2, 3, 4, 5, 8, 9, 11],
+        "validation": [6, 7],
+        "test": [0, 10]
+    }
+
+    # Verify no subject leakage
+    train_ids = set(splits["train"])
+    val_ids = set(splits["validation"])
+    test_ids = set(splits["test"])
+
+    assert not (train_ids & val_ids)
+    assert not (train_ids & test_ids)
+    assert not (val_ids & test_ids)
+
+    saved_files = {}
+
+    for split_name, subject_ids in splits.items():
+
+        X_list = []
+        y_list = []
+        groups_list = []
+
+        print(f"\nCreating {split_name} dataset...")
+
+        for sid in subject_ids:
+
+            file_path = processed_dir / f"subject_{sid:02d}.npz"
+
+            with np.load(file_path) as data:
+                X = data["X"]
+                y = data["y"]
+                groups = data["groups"]
+
+            assert np.all(groups == sid)
+
+            X_list.append(X)
+            y_list.append(y)
+            groups_list.append(groups)
+
+        # Combine subjects in this split
+        X_split = np.concatenate(X_list, axis=0)
+        y_split = np.concatenate(y_list)
+        groups_split = np.concatenate(groups_list)
+
+        # Save split
+        output_file = output_dir / f"{split_name}.npz"
+
+        np.savez_compressed(
+            output_file,
+            X=X_split,
+            y=y_split,
+            groups=groups_split,
+            subjects=np.array(subject_ids)
+        )
+
+        print("Subjects:", subject_ids)
+        print("X shape:", X_split.shape)
+        print("y shape:", y_split.shape)
+        print("Data type:", X_split.dtype)
+        print("Stage distribution:", dict(Counter(y_split)))
+
+        saved_files[split_name] = str(output_file)
+
+        del X_split, y_split, groups_split
+
+    print("\nAll splits created successfully!")
+
+    return saved_files

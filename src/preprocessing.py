@@ -172,7 +172,7 @@ def extract_epochs(raw_eeg, annotations, epoch_duration=30):
     if len(epochs) == 0:
         raise ValueError("No valid epochs extracted!")
 
-    X = np.stack(epochs)
+    X = np.stack(epochs).astype(np.float32)
     y = np.array(labels)
 
     print("Epoch extraction completed!")
@@ -183,3 +183,45 @@ def extract_epochs(raw_eeg, annotations, epoch_duration=30):
     return X, y
 
 
+
+def process_subject(psg_path, hypnogram_path, subject_id):
+    """
+    Complete preprocessing pipeline for one subject.
+
+    Steps:
+    1. Load PSG and hypnogram.
+    2. Select EEG channels and filter.
+    3. Extract 30-second epochs.
+    4. Assign sleep-stage labels.
+    5. Store subject ID for every epoch.
+    """
+
+    print(f"\nProcessing Subject {subject_id}...")
+
+    # Load recording
+    raw, annotations = load_recording(
+        psg_path,
+        hypnogram_path
+    )
+
+    # Select and filter EEG channels
+    raw_eeg = preprocess_eeg(raw)
+
+    # Extract epochs and labels
+    X, y = extract_epochs(
+        raw_eeg,
+        annotations
+    )
+
+    # Identify which subject each epoch belongs to
+    groups = np.full(
+        len(y),
+        subject_id,
+        dtype=np.int16
+    )
+
+    print(f"Subject {subject_id} completed!")
+    print("Data shape:", X.shape)
+    print("Labels shape:", y.shape)
+
+    return X, y, groups

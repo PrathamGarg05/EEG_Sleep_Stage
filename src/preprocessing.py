@@ -84,3 +84,102 @@ def preprocess_eeg(raw):
     print("Sampling frequency:", raw_eeg.info["sfreq"], "Hz")
 
     return raw_eeg
+
+
+
+# Mapping Sleep-EDF annotation names to our 5 classes
+STAGE_MAPPING = {
+    "Sleep stage W": "W",
+    "Sleep stage 1": "N1",
+    "Sleep stage 2": "N2",
+    "Sleep stage 3": "N3",
+    "Sleep stage 4": "N3",
+    "Sleep stage R": "REM"
+}
+
+
+def extract_epochs(raw_eeg, annotations, epoch_duration=30):
+    """
+    Divide filtered EEG into 30-second epochs and assign labels.
+
+    Returns
+    -------
+    X : numpy array
+        Shape: (number_of_epochs, 2, 3000)
+    y : numpy array
+        Sleep-stage labels for each epoch.
+    """
+
+    sfreq = raw_eeg.info["sfreq"]
+
+    # Number of samples in one epoch
+    epoch_samples = int(epoch_duration * sfreq)
+
+    epochs = []
+    labels = []
+
+    skipped_annotations = 0
+
+    for onset, duration, description in zip(
+        annotations.onset,
+        annotations.duration,
+        annotations.description
+    ):
+
+        # Ignore unknown or unmapped sleep stages
+        if description not in STAGE_MAPPING:
+            continue
+
+        # Convert time into sample indices
+        start_sample = int(round(onset * sfreq))
+        duration_samples = int(round(duration * sfreq))
+
+        # Ensure annotation begins on a 30-second boundary
+        if start_sample % epoch_samples != 0:
+            skipped_annotations += 1
+            continue
+
+        # Number of complete epochs in this annotation
+        n_epochs = duration_samples // epoch_samples
+
+        # Do not read beyond the EEG recording
+        available_epochs = (
+            raw_eeg.n_times - start_sample
+        ) // epoch_samples
+
+        n_epochs = min(n_epochs, available_epochs)
+
+        if n_epochs <= 0:
+            skipped_annotations += 1
+            continue
+
+        stage = STAGE_MAPPING[description]
+
+        for i in range(n_epochs):
+
+            epoch_start = start_sample + i * epoch_samples
+            epoch_end = epoch_start + epoch_samples
+
+            # Extract EEG data: (2, 3000)
+            epoch_data = raw_eeg.get_data(
+                start=epoch_start,
+                stop=epoch_end
+            )
+
+            epochs.append(epoch_data)
+            labels.append(stage)
+
+    if len(epochs) == 0:
+        raise ValueError("No valid epochs extracted!")
+
+    X = np.stack(epochs)
+    y = np.array(labels)
+
+    print("Epoch extraction completed!")
+    print("X shape:", X.shape)
+    print("y shape:", y.shape)
+    print("Skipped annotations:", skipped_annotations)
+
+    return X, y
+
+

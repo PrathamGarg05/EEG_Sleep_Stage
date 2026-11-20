@@ -49,6 +49,14 @@ def process_all_subjects(paths, output_dir, subject_ids=None):
 
     for (psg_path, hyp_path), subject_id in zip(paths, subject_ids):
 
+        output_file = output_dir / f"subject_{subject_id:02d}.npz"
+
+        # Skip if already processed
+        if output_file.exists():
+            print(f"Skipping Subject {subject_id}: already processed")
+            saved_files.append(str(output_file))
+            continue
+
         # Process one subject
         X, y, groups = process_subject(
             psg_path,

@@ -5,19 +5,97 @@ EEG Sleep Stage Classification
 Module: dataset.py
 
 Purpose:
-Process multiple Sleep-EDF subjects and save
-their extracted EEG epochs and labels.
+Process all Sleep-EDF recordings and save each
+recording's extracted EEG epochs separately.
 """
 
+import gc
+import re
 import numpy as np
-from pathlib import Path
 
+from pathlib import Path
 from src.preprocessing import process_subject
 
 
-def process_all_subjects(paths, output_dir, subject_ids=None):
+def get_recording_info(psg_path):
     """
-    Process multiple subjects and save each subject separately.
+    Extract subject ID and recording number from
+    a Sleep-EDF PSG filename.
+
+    Example:
+    SC4001E0-PSG.edf -> subject 0, recording 1
+    SC4012E0-PSG.edf -> subject 1, recording 2
+    """
+
+    filename = Path(psg_path).name
+
+    match = re.fullmatch(
+        r"SC4(\d{2})(\d)E0-PSG\.edf",
+        filename
+    )
+
+    if match is None:
+        raise ValueError(
+            f"Unexpected PSG filename format: {filename}"
+        )
+
+    subject_id = int(match.group(1))
+    recording_id = int(match.group(2))
+
+    return subject_id, recording_id
+
+
+def is_valid_processed_file(file_path, subject_id, recording_id):
+    """
+    Check whether an existing processed file is valid
+    and belongs to the expected recording.
+    """
+
+    try:
+        with np.load(file_path, allow_pickle=False) as data:
+
+            X = data["X"]
+            y = data["y"]
+            groups = data["groups"]
+
+            saved_subject = int(data["subject_id"].item())
+            saved_recording = int(data["recording_id"].item())
+
+            if saved_subject != subject_id:
+                return False
+
+            if saved_recording != recording_id:
+                return False
+
+            if X.ndim != 3 or X.shape[1:] != (2, 3000):
+                return False
+
+            if len(X) == 0 or len(X) != len(y):
+                return False
+
+            if len(X) != len(groups):
+                return False
+
+            if not np.all(groups == subject_id):
+                return False
+
+            if not np.isfinite(X).all():
+                return False
+
+            return True
+
+    except Exception:
+        return False
+
+
+def process_all_recordings(paths, output_dir):
+    """
+    Process all PSG-hypnogram pairs.
+
+    Each recording is saved separately.
+
+    Existing valid files are skipped, allowing
+    processing to resume after a Colab disconnect.
 
     Parameters
     ----------
@@ -25,149 +103,134 @@ def process_all_subjects(paths, output_dir, subject_ids=None):
         List of (PSG path, hypnogram path) pairs.
 
     output_dir : str
-        Directory where processed data will be saved.
-
-    subject_ids : list, optional
-        Subject IDs corresponding to paths.
+        Directory where processed files are saved.
 
     Returns
     -------
     saved_files : list
-        Paths of saved subject datasets.
+        Paths of successfully processed recordings.
     """
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if subject_ids is None:
-        subject_ids = list(range(len(paths)))
-
-    if len(paths) != len(subject_ids):
-        raise ValueError("Number of paths and subject IDs must match.")
+    if not paths:
+        raise ValueError("No recording paths provided.")
 
     saved_files = []
+    seen_recordings = set()
 
-    for (psg_path, hyp_path), subject_id in zip(paths, subject_ids):
+    print("Total recordings received:", len(paths))
 
-        output_file = output_dir / f"subject_{subject_id:02d}.npz"
+    for index, (psg_path, hyp_path) in enumerate(paths, start=1):
 
-        # Skip if already processed
+        subject_id, recording_id = get_recording_info(psg_path)
+
+        recording_key = (subject_id, recording_id)
+
+        if recording_key in seen_recordings:
+            raise ValueError(
+                f"Duplicate recording detected: {recording_key}"
+            )
+
+        seen_recordings.add(recording_key)
+
+        output_file = output_dir / (
+            f"subject_{subject_id:02d}_"
+            f"recording_{recording_id}.npz"
+        )
+
+        print("\n" + "=" * 60)
+        print(
+            f"[{index}/{len(paths)}] "
+            f"Subject {subject_id}, Recording {recording_id}"
+        )
+
+        # Skip an already completed recording
         if output_file.exists():
-            print(f"Skipping Subject {subject_id}: already processed")
-            saved_files.append(str(output_file))
-            continue
 
-        # Process one subject
+            if is_valid_processed_file(
+                output_file,
+                subject_id,
+                recording_id
+            ):
+                print("Already processed and validated. Skipping.")
+                saved_files.append(str(output_file))
+                continue
+
+            print("Existing file is invalid. Reprocessing.")
+
+            output_file.unlink()
+
+        # Process one recording
         X, y, groups = process_subject(
-            psg_path,
-            hyp_path,
-            subject_id
+            psg_path=psg_path,
+            hypnogram_path=hyp_path,
+            subject_id=subject_id
         )
 
-        # Save processed data
-        output_file = output_dir / f"subject_{subject_id:02d}.npz"
+        # Validate extracted data
+        if X.ndim != 3 or X.shape[1:] != (2, 3000):
+            raise ValueError(f"Unexpected X shape: {X.shape}")
 
-        np.savez_compressed(
-            output_file,
-            X=X,
-            y=y,
-            groups=groups
+        if len(X) == 0 or len(X) != len(y):
+            raise ValueError("Invalid epoch or label count.")
+
+        if len(X) != len(groups):
+            raise ValueError("Groups and epochs have different lengths.")
+
+        if not np.isfinite(X).all():
+            raise ValueError("Non-finite values found in EEG data.")
+
+        if not np.all(groups == subject_id):
+            raise ValueError("Incorrect subject IDs in groups.")
+
+        # Save to a temporary file first.
+        # This prevents an incomplete final file if saving is interrupted.
+        temp_file = output_file.with_name(
+            output_file.stem + ".tmp"
         )
 
-        print(f"Saved: {output_file}")
+        try:
+            with open(temp_file, "wb") as f:
+                np.savez_compressed(
+                    f,
+                    X=X,
+                    y=y,
+                    groups=groups,
+                    subject_id=np.array(subject_id),
+                    recording_id=np.array(recording_id),
+                    psg_name=np.array(Path(psg_path).name),
+                    hypnogram_name=np.array(Path(hyp_path).name)
+                )
+
+            # Verify the saved file before finalizing it
+            if not is_valid_processed_file(
+                temp_file,
+                subject_id,
+                recording_id
+            ):
+                raise ValueError("Saved file failed validation.")
+
+            temp_file.replace(output_file)
+
+        finally:
+            if temp_file.exists():
+                temp_file.unlink()
+
+        print("Saved:", output_file)
+        print("Epochs:", len(X))
+        print("Shape:", X.shape)
 
         saved_files.append(str(output_file))
 
-        # Release memory before processing next subject
+        # Release memory before the next recording
         del X, y, groups
+        gc.collect()
 
-    print("\nAll subjects processed successfully!")
-    print("Total subjects:", len(saved_files))
-
-    return saved_files
-
-
-
-def create_subject_splits(processed_dir, output_dir):
-    """
-    Create subject-wise train, validation and test datasets.
-
-    No subject appears in more than one split.
-    """
-
-    from collections import Counter
-
-    processed_dir = Path(processed_dir)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Fixed subject-wise split
-    splits = {
-        "train": [1, 2, 3, 4, 5, 8, 9, 11],
-        "validation": [6, 7],
-        "test": [0, 10]
-    }
-
-    # Verify no subject leakage
-    train_ids = set(splits["train"])
-    val_ids = set(splits["validation"])
-    test_ids = set(splits["test"])
-
-    assert not (train_ids & val_ids)
-    assert not (train_ids & test_ids)
-    assert not (val_ids & test_ids)
-
-    saved_files = {}
-
-    for split_name, subject_ids in splits.items():
-
-        X_list = []
-        y_list = []
-        groups_list = []
-
-        print(f"\nCreating {split_name} dataset...")
-
-        for sid in subject_ids:
-
-            file_path = processed_dir / f"subject_{sid:02d}.npz"
-
-            with np.load(file_path) as data:
-                X = data["X"]
-                y = data["y"]
-                groups = data["groups"]
-
-            assert np.all(groups == sid)
-
-            X_list.append(X)
-            y_list.append(y)
-            groups_list.append(groups)
-
-        # Combine subjects in this split
-        X_split = np.concatenate(X_list, axis=0)
-        y_split = np.concatenate(y_list)
-        groups_split = np.concatenate(groups_list)
-
-        # Save split
-        output_file = output_dir / f"{split_name}.npz"
-
-        np.savez_compressed(
-            output_file,
-            X=X_split,
-            y=y_split,
-            groups=groups_split,
-            subjects=np.array(subject_ids)
-        )
-
-        print("Subjects:", subject_ids)
-        print("X shape:", X_split.shape)
-        print("y shape:", y_split.shape)
-        print("Data type:", X_split.dtype)
-        print("Stage distribution:", dict(Counter(y_split)))
-
-        saved_files[split_name] = str(output_file)
-
-        del X_split, y_split, groups_split
-
-    print("\nAll splits created successfully!")
+    print("\n" + "=" * 60)
+    print("Processing completed!")
+    print("Total recordings:", len(saved_files))
+    print("Output directory:", output_dir)
 
     return saved_files

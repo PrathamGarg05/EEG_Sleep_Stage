@@ -17,20 +17,17 @@ from pathlib import Path
 from src.preprocessing import process_subject
 
 
+
 def get_recording_info(psg_path):
     """
-    Extract subject ID and recording number from
-    a Sleep-EDF PSG filename.
-
-    Example:
-    SC4001E0-PSG.edf -> subject 0, recording 1
-    SC4012E0-PSG.edf -> subject 1, recording 2
+    Extract subject ID and recording number
+    from Sleep-EDF PSG filenames.
     """
 
     filename = Path(psg_path).name
 
     match = re.fullmatch(
-        r"SC4(\d{2})(\d)E0-PSG\.edf",
+        r"SC4(\d{2})(\d)[EF]0-PSG\.edf",
         filename
     )
 
@@ -43,6 +40,7 @@ def get_recording_info(psg_path):
     recording_id = int(match.group(2))
 
     return subject_id, recording_id
+
 
 
 def is_valid_processed_file(file_path, subject_id, recording_id):

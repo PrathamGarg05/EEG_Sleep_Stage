@@ -27,7 +27,7 @@ def get_recording_info(psg_path):
     filename = Path(psg_path).name
 
     match = re.fullmatch(
-        r"SC4(\d{2})(\d)[EF]0-PSG\.edf",
+        r"SC4(\d{2})(\d)[A-Z]0-PSG\.edf",
         filename
     )
 
